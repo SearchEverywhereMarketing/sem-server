@@ -16,8 +16,8 @@ const PORT = process.env.PORT || 3000;
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 app.use(cors({ origin: '*' }));
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+app.use(express.json({ limit: '500mb' }));
+app.use(express.urlencoded({ extended: true, limit: '500mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ── POST /api/score  (Anthropic proxy) ───────────────────────────────────────
@@ -48,12 +48,7 @@ app.post('/api/score', async (req, res) => {
   }
 });
 
-// ── POST /api/score-video  (video → frames + Whisper transcript) ──────────────
-const upload = multer({
-  dest: os.tmpdir(),
-  limits: { fileSize: 500 * 1024 * 1024 }, // 500 MB
-});
-
+// ── Shared video processing helpers ──────────────────────────────────────────
 async function getVideoDuration(videoPath) {
   console.log('[score-video] Getting duration for:', videoPath);
   const { stdout } = await execAsync(
@@ -125,30 +120,16 @@ function sampleFrames(frames, max) {
   return result;
 }
 
-app.post('/api/score-video', upload.single('video'), async (req, res) => {
-  console.log('[score-video] Request received');
-  const file = req.file;
-
-  if (!file) {
-    return res.status(400).json({ error: 'No video file provided' });
-  }
-
-  console.log('[score-video] File received:', {
-    originalname: file.originalname,
-    mimetype: file.mimetype,
-    size: file.size,
-    path: file.path,
-  });
-
+async function processVideoFile(videoPath, res) {
   const framesDir = await fsPromises.mkdtemp(path.join(os.tmpdir(), 'frames-'));
   const audioPath = path.join(os.tmpdir(), `audio-${Date.now()}.wav`);
 
   try {
-    const duration = await getVideoDuration(file.path);
+    const duration = await getVideoDuration(videoPath);
 
     await Promise.all([
-      extractFrames(file.path, framesDir),
-      extractAudio(file.path, audioPath),
+      extractFrames(videoPath, framesDir),
+      extractAudio(videoPath, audioPath),
     ]);
 
     const allFrameFiles = (await fsPromises.readdir(framesDir))
@@ -175,21 +156,89 @@ app.post('/api/score-video', upload.single('video'), async (req, res) => {
 
     console.log('[score-video] Done. Sending response.');
     res.json({ frames, transcript, words, duration });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    console.error('[score-video] ERROR:', message);
-    res.status(500).json({ error: 'Failed to process video', details: message });
   } finally {
     await Promise.allSettled([
-      fsPromises.rm(file.path, { force: true }),
       fsPromises.rm(framesDir, { recursive: true, force: true }),
       fsPromises.rm(audioPath, { force: true }),
     ]);
     console.log('[score-video] Temp files cleaned up');
   }
+}
+
+// ── POST /api/score-video  (video → frames + Whisper transcript) ──────────────
+// Accepts EITHER:
+//   A) multipart/form-data with a 'video' field (legacy)
+//   B) application/json with { videoB64, fileName, mimeType }
+const upload = multer({
+  dest: os.tmpdir(),
+  limits: { fileSize: 500 * 1024 * 1024 },
 });
 
-// ── Global JSON error handler ─────────────────────────────────────────────────
+app.post('/api/score-video', (req, res, next) => {
+  // Route based on content type
+  if (req.is('application/json')) {
+    next(); // skip multer, go to JSON handler below
+  } else {
+    upload.single('video')(req, res, next); // multer handles multipart
+  }
+}, async (req, res) => {
+  console.log('[score-video] Request received, content-type:', req.headers['content-type']);
+
+  let videoPath = null;
+  let tempCreated = false;
+
+  try {
+    if (req.is('application/json')) {
+      // ── JSON base64 path ──────────────────────────────────
+      const { videoB64, fileName, mimeType } = req.body;
+
+      if (!videoB64) {
+        return res.status(400).json({ error: 'No video data provided (videoB64 missing)' });
+      }
+
+      console.log('[score-video] JSON path — fileName:', fileName, 'mimeType:', mimeType, 'b64 length:', videoB64.length);
+
+      // Determine file extension from mimeType or fileName
+      const ext = (fileName && path.extname(fileName)) ||
+                  (mimeType === 'video/quicktime' ? '.mov' :
+                   mimeType === 'video/webm' ? '.webm' :
+                   mimeType === 'video/x-matroska' ? '.mkv' : '.mp4');
+
+      videoPath = path.join(os.tmpdir(), `upload-${Date.now()}${ext}`);
+      const videoBuffer = Buffer.from(videoB64, 'base64');
+      await fsPromises.writeFile(videoPath, videoBuffer);
+      tempCreated = true;
+
+      console.log('[score-video] Base64 decoded and written to:', videoPath, 'size:', videoBuffer.length, 'bytes');
+
+    } else {
+      // ── Multipart FormData path ───────────────────────────
+      const file = req.file;
+      if (!file) {
+        return res.status(400).json({ error: 'No video file provided' });
+      }
+      console.log('[score-video] FormData path — file:', file.originalname, 'size:', file.size);
+      videoPath = file.path;
+    }
+
+    await processVideoFile(videoPath, res);
+
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Unknown error';
+    console.error('[score-video] ERROR:', message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to process video', details: message });
+    }
+  } finally {
+    if (videoPath && tempCreated) {
+      await fsPromises.rm(videoPath, { force: true }).catch(() => {});
+    } else if (videoPath && req.file) {
+      await fsPromises.rm(videoPath, { force: true }).catch(() => {});
+    }
+  }
+});
+
+// ── Global error handler ──────────────────────────────────────────────────────
 app.use((err, _req, res, _next) => {
   const status = err.status ?? 500;
   const message = err.message ?? 'Internal server error';
