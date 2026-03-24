@@ -3,12 +3,21 @@
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
+const ffmpegStatic = require('ffmpeg-static');
+const ffmpeg = require('fluent-ffmpeg');
 const { exec } = require('child_process');
 const { promisify } = require('util');
 const fs = require('fs');
 const fsPromises = require('fs/promises');
 const path = require('path');
 const os = require('os');
+
+// Point fluent-ffmpeg at the static binary
+ffmpeg.setFfmpegPath(ffmpegStatic);
+
+// Also set ffprobe path — ffmpeg-static includes ffprobe
+const ffprobePath = ffmpegStatic.replace('ffmpeg', 'ffprobe');
+ffmpeg.setFfprobePath(ffprobePath);
 
 const execAsync = promisify(exec);
 const app = express();
@@ -51,28 +60,50 @@ app.post('/api/score', async (req, res) => {
 // ── Shared video processing helpers ──────────────────────────────────────────
 async function getVideoDuration(videoPath) {
   console.log('[score-video] Getting duration for:', videoPath);
-  const { stdout } = await execAsync(
-    `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${videoPath}"`
-  );
-  const dur = parseFloat(stdout.trim());
-  console.log('[score-video] Duration:', dur);
-  return dur;
+  return new Promise((resolve, reject) => {
+    ffmpeg.ffprobe(videoPath, (err, metadata) => {
+      if (err) return reject(err);
+      const dur = metadata.format.duration || 0;
+      console.log('[score-video] Duration:', dur);
+      resolve(dur);
+    });
+  });
 }
 
 async function extractFrames(videoPath, framesDir) {
   console.log('[score-video] Extracting frames to:', framesDir);
-  const { stderr } = await execAsync(
-    `ffmpeg -i "${videoPath}" -vf fps=1 "${framesDir}/frame_%04d.jpg" -y`
-  );
-  console.log('[score-video] ffmpeg frames done, stderr tail:', stderr.slice(-300));
+  return new Promise((resolve, reject) => {
+    ffmpeg(videoPath)
+      .outputOptions(['-vf', 'fps=1'])
+      .output(path.join(framesDir, 'frame_%04d.jpg'))
+      .on('end', () => {
+        console.log('[score-video] ffmpeg frames done');
+        resolve();
+      })
+      .on('error', (err) => {
+        console.error('[score-video] ffmpeg frames error:', err.message);
+        reject(err);
+      })
+      .run();
+  });
 }
 
 async function extractAudio(videoPath, audioPath) {
   console.log('[score-video] Extracting audio to:', audioPath);
-  const { stderr } = await execAsync(
-    `ffmpeg -i "${videoPath}" -ar 16000 -ac 1 -f wav "${audioPath}" -y`
-  );
-  console.log('[score-video] ffmpeg audio done, stderr tail:', stderr.slice(-300));
+  return new Promise((resolve, reject) => {
+    ffmpeg(videoPath)
+      .outputOptions(['-ar', '16000', '-ac', '1', '-f', 'wav'])
+      .output(audioPath)
+      .on('end', () => {
+        console.log('[score-video] ffmpeg audio done');
+        resolve();
+      })
+      .on('error', (err) => {
+        console.error('[score-video] ffmpeg audio error:', err.message);
+        reject(err);
+      })
+      .run();
+  });
 }
 
 async function transcribeAudio(audioPath) {
