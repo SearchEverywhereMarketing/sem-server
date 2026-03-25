@@ -16,7 +16,7 @@ const os = require('os');
 ffmpeg.setFfmpegPath(ffmpegStatic);
 
 // Also set ffprobe path — ffmpeg-static includes ffprobe
-const ffprobePath = ffmpegStatic.replace('ffmpeg', 'ffprobe');
+const ffprobePath = require('ffprobe-static').path;
 ffmpeg.setFfprobePath(ffprobePath);
 
 const execAsync = promisify(exec);
