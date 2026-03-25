@@ -16,7 +16,7 @@ const os = require('os');
 ffmpeg.setFfmpegPath(ffmpegStatic);
 
 // Also set ffprobe path — ffmpeg-static includes ffprobe
-const ffprobePath = require('ffprobe-static').path;
+const ffprobePath = ffmpegStatic.replace('ffmpeg', 'ffprobe');
 ffmpeg.setFfprobePath(ffprobePath);
 
 const execAsync = promisify(exec);
@@ -25,7 +25,6 @@ const PORT = process.env.PORT || 3000;
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 app.use(cors({ origin: '*' }));
-app.options('*', cors({ origin: '*' }));
 app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ extended: true, limit: '500mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -184,9 +183,19 @@ async function processVideoFile(videoPath, res) {
     );
 
     console.log('[score-video] Frames encoded:', frames.length, '— starting transcription');
-    const { text: transcript, words } = await transcribeAudio(audioPath);
 
-    console.log('[score-video] Done. Sending response.');
+    // Transcription is best-effort — frames always returned even if Whisper fails
+    let transcript = '';
+    let words = [];
+    try {
+      const result = await transcribeAudio(audioPath);
+      transcript = result.text;
+      words = result.words;
+    } catch (transcriptErr) {
+      console.warn('[score-video] Transcription failed (non-fatal):', transcriptErr.message);
+    }
+
+    console.log('[score-video] Done. Sending response. transcript length:', transcript.length);
     res.json({ frames, transcript, words, duration });
   } finally {
     await Promise.allSettled([
@@ -283,6 +292,10 @@ app.use((err, _req, res, _next) => {
 // ── Start ─────────────────────────────────────────────────────────────────────
 const server = app.listen(PORT, () => {
   console.log(`Server listening on port ${PORT}`);
+  console.log('[startup] ANTHROPIC_API_KEY present:', !!process.env.ANTHROPIC_API_KEY);
+  console.log('[startup] OPENAI_API_KEY present:', !!process.env.OPENAI_API_KEY);
+  console.log('[startup] ffmpeg path:', ffmpegStatic);
+  console.log('[startup] ffprobe path:', require('ffprobe-static').path);
 });
 
 server.setTimeout(120000);
