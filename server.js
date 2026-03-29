@@ -336,33 +336,50 @@ app.post('/api/analyze-image', async (req, res) => {
   const platformDimensions = {
     instagram: '1080x1080 square',
     facebook: '1200x630 landscape',
+    linkedin: '1200x627 landscape',
     youtube: '1280x720 landscape thumbnail',
     tiktok: '1080x1920 vertical portrait',
   };
 
-  const systemPrompt = `You are a world-class commercial photographer and art director specialising in food, product, and local business photography. 
+  const systemPrompt = `You are a world-class commercial photographer and art director specialising in food, product, and local business photography.
 
-Your job is to analyse a product photo and write a detailed DALL-E 3 prompt that:
-1. Recreates the same product in a dramatically more professional, editorial setting
-2. Preserves the exact product — same item, same colors, same branding visible
-3. Creates a compelling scene appropriate for the platform and business type
-4. Is optimised for ${platform?.toUpperCase()} at ${platformDimensions[platform] || '1080x1080 square'} dimensions
-5. Output type: ${outputType}
+CRITICAL RULE: Your DALL-E 3 prompt MUST be anchored entirely to the EXACT product visible in the uploaded image. Do NOT generate content based on the business name. The business name is only used for context — the product in the image is the single source of truth.
 
-Return ONLY a JSON object with this exact structure:
+Your process:
+STEP 1 — Describe exactly what you see in the image:
+- What is the specific product? (e.g. "a milkshake in a clear plastic cup with whipped cream and a green straw")
+- What are the exact colors, textures, toppings, packaging?
+- What makes this product visually distinctive?
+
+STEP 2 — Write a DALL-E 3 prompt that:
+- Opens with the EXACT product description from Step 1 — this MUST be the first sentence
+- Places that exact product in a dramatically more professional, editorial setting
+- Uses cinematic food photography lighting appropriate for the product type
+- Is optimised for ${platform?.toUpperCase()} at ${platformDimensions[platform] || '1080x1080 square'} dimensions
+- Matches the output type: ${outputType}
+- Does NOT include any text, logos, or watermarks in the image
+
+STEP 3 — The DALL-E prompt must start with the product itself, for example:
+GOOD: "A creamy eggnog milkshake in a frosted plastic cup topped with swirled whipped cream and a green straw, photographed..."
+BAD: "An Old School Burgers promotional image showing..."
+
+Return ONLY a JSON object:
 {
-  "prompt": "detailed DALL-E 3 generation prompt here",
+  "product_description": "exact description of what you see in the image in 2-3 sentences",
+  "prompt": "DALL-E 3 prompt starting with the exact product description",
   "scene_description": "one sentence describing the scene",
   "cta_text": "suggested call-to-action text for overlay, max 6 words"
 }`;
 
-  const userMessage = `Business: ${brandName || 'Local Business'}
+  const userMessage = `I have uploaded a product image. Describe EXACTLY what you see in it, then write a DALL-E 3 prompt to recreate that specific product professionally.
+
+Business name (context only, do NOT use this to decide what the product is): ${brandName || 'Local Business'}
 Industry: ${industry || 'Food & Beverage'}
 Platform: ${platform}
 Output type: ${outputType}
-Brief: ${description || 'Create professional marketing content for this product'}
+Client brief: ${description || 'Create a professional marketing image of this product'}
 
-Analyse this product image and write a DALL-E 3 prompt to recreate it professionally.`;
+IMPORTANT: Look at the image carefully. Whatever product is in the photo — that is what DALL-E must generate. Ignore the business name when deciding what the product is.`;
 
   try {
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -413,18 +430,22 @@ app.post('/api/score-image', async (req, res) => {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return res.status(500).json({ error: 'ANTHROPIC_API_KEY is not configured' });
 
-  const { imageB64, mimeType, platform, outputType, brandName, industry } = req.body;
+  const { imageB64, mimeType, platform, outputType, brandName, industry, expectedProduct } = req.body;
   if (!imageB64) return res.status(400).json({ error: 'imageB64 is required' });
 
-  const systemPrompt = `You are a content quality evaluator specialising in local business marketing visuals.
+  const systemPrompt = `You are a strict content quality evaluator specialising in local business marketing visuals.
 
 Score this generated marketing image for a ${brandName || 'local business'} in the ${industry || 'Food & Beverage'} industry.
 Platform: ${platform?.toUpperCase()}
 Output type: ${outputType}
+${expectedProduct ? `Expected product: ${expectedProduct}` : ''}
+
+CRITICAL RULE — Product accuracy check:
+${expectedProduct ? `The image MUST show a ${expectedProduct}. If it shows a different product (e.g. a burger when a milkshake was requested), product_clarity must be 1.0 or below and overall_score must be 3.0 or below, regardless of how good the image looks. A beautiful image of the wrong product is a complete failure.` : 'Verify the product in the image matches what a ${industry} business would actually sell.'}
 
 Score it across these dimensions on a 0-10 scale:
 - visual_impact: Does it stop the scroll? Is it striking?
-- product_clarity: Is the product clearly the hero? Is it appetising/appealing?
+- product_clarity: Is the CORRECT product clearly the hero? Score 1 or below if wrong product is shown.
 - platform_fit: Does it match ${platform} content norms and dimensions?
 - brand_professionalism: Does it look like a professional brand?
 - cta_potential: Would this make someone want to buy/visit?
@@ -439,9 +460,10 @@ Return ONLY valid JSON:
   "brand_professionalism": 0,
   "cta_potential": 0,
   "composition": 0,
-  "passes": true,
+  "passes": false,
+  "wrong_product": false,
   "priority_fix": "one specific fix if score < 8.0",
-  "prompt_adjustment": "specific instruction to improve the DALL-E prompt if score < 8.0"
+  "prompt_adjustment": "specific instruction to improve the DALL-E prompt — if wrong product was generated, start with WRONG PRODUCT: and describe exactly what product should appear"
 }`;
 
   try {
