@@ -29,6 +29,18 @@ app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ extended: true, limit: '500mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
+// ── API Authentication ───────────────────────────────────────────────────────
+// All /api/* routes require x-sem-key header matching SEM_API_SECRET env var
+app.use('/api', function(req, res, next) {
+  const secret = process.env.SEM_API_SECRET;
+  if (!secret) return next(); // if secret not set, fail open (won't happen in prod)
+  const key = req.headers['x-sem-key'];
+  if (!key || key !== secret) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  next();
+});
+
 // ── POST /api/score  (Anthropic proxy) ───────────────────────────────────────
 app.post('/api/score', async (req, res) => {
   console.log('[score] Request received, body size:', JSON.stringify(req.body).length, 'bytes');
@@ -497,7 +509,7 @@ Return ONLY valid JSON:
     const raw = data.content?.map(b => b.text || '').join('') || '';
     const clean = raw.replace(/^```json\s*/,'').replace(/\s*```$/,'').trim();
     const parsed = JSON.parse(clean);
-    parsed.passes = parsed.overall_score >= 8.0;
+    parsed.passes = parsed.overall_score >= 9.0;
     console.log('[score-image] Score:', parsed.overall_score, 'passes:', parsed.passes);
     res.json(parsed);
   } catch (err) {
