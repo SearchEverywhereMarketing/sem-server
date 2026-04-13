@@ -4,6 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const ffmpegStatic = require('ffmpeg-static');
+const ffprobeStatic = require('ffprobe-static');
 const ffmpeg = require('fluent-ffmpeg');
 const { exec } = require('child_process');
 const { promisify } = require('util');
@@ -12,12 +13,9 @@ const fsPromises = require('fs/promises');
 const path = require('path');
 const os = require('os');
 
-// Point fluent-ffmpeg at the static binary
+// Point fluent-ffmpeg at the static binaries
 ffmpeg.setFfmpegPath(ffmpegStatic);
-
-// Also set ffprobe path — ffmpeg-static includes ffprobe
-const ffprobePath = ffmpegStatic.replace('ffmpeg', 'ffprobe');
-ffmpeg.setFfprobePath(ffprobePath);
+ffmpeg.setFfprobePath(ffprobeStatic.path);
 
 const execAsync = promisify(exec);
 const app = express();
@@ -86,7 +84,7 @@ async function extractFrames(videoPath, framesDir) {
   console.log('[score-video] Extracting frames to:', framesDir);
   return new Promise((resolve, reject) => {
     ffmpeg(videoPath)
-      .outputOptions(['-vf', 'fps=1'])
+      .outputOptions(['-vf', 'fps=1,scale=1568:-2'])
       .output(path.join(framesDir, 'frame_%04d.jpg'))
       .on('end', () => {
         console.log('[score-video] ffmpeg frames done');
@@ -534,7 +532,7 @@ const server = app.listen(PORT, () => {
   console.log('[startup] ANTHROPIC_API_KEY present:', !!process.env.ANTHROPIC_API_KEY);
   console.log('[startup] OPENAI_API_KEY present:', !!process.env.OPENAI_API_KEY);
   console.log('[startup] ffmpeg path:', ffmpegStatic);
-  console.log('[startup] ffprobe path:', require('ffprobe-static').path);
+  console.log('[startup] ffprobe path:', ffprobeStatic.path);
 });
 
 server.setTimeout(120000);
