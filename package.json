@@ -1,7 +1,7 @@
 {
   "name": "sem-server",
   "version": "1.0.0",
-  "main": "inxex.js",
+  "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
