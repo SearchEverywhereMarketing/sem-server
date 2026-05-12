@@ -123,29 +123,95 @@ async function transcribeAudio(audioPath) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) throw new Error('OPENAI_API_KEY is not configured');
 
+  // Build multipart body manually using Node built-ins only
+  // No Blob, no form-data package, no curl — guaranteed to work on any Node version
+  const https = require('https');
+  const boundary = '----SemEngineBoundary' + Date.now();
+
   const audioBuffer = await fsPromises.readFile(audioPath);
-  const audioBlob = new Blob([audioBuffer], { type: 'audio/wav' });
+  console.log('[score-video] Audio buffer size:', audioBuffer.length, 'bytes');
 
-  const formData = new FormData();
-  formData.append('file', audioBlob, 'audio.wav');
-  formData.append('model', 'whisper-1');
-  formData.append('response_format', 'verbose_json');
-  formData.append('timestamp_granularities[]', 'word');
+  // Build multipart body as a Buffer
+  const CRLF = '\r\n';
+  const parts = [];
 
-  const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}` },
-    body: formData,
+  // file field
+  parts.push(
+    Buffer.from(
+      '--' + boundary + CRLF +
+      'Content-Disposition: form-data; name="file"; filename="audio.wav"' + CRLF +
+      'Content-Type: audio/wav' + CRLF + CRLF
+    )
+  );
+  parts.push(audioBuffer);
+  parts.push(Buffer.from(CRLF));
+
+  // model field
+  parts.push(Buffer.from(
+    '--' + boundary + CRLF +
+    'Content-Disposition: form-data; name="model"' + CRLF + CRLF +
+    'whisper-1' + CRLF
+  ));
+
+  // response_format field
+  parts.push(Buffer.from(
+    '--' + boundary + CRLF +
+    'Content-Disposition: form-data; name="response_format"' + CRLF + CRLF +
+    'verbose_json' + CRLF
+  ));
+
+  // timestamp_granularities field
+  parts.push(Buffer.from(
+    '--' + boundary + CRLF +
+    'Content-Disposition: form-data; name="timestamp_granularities[]"' + CRLF + CRLF +
+    'word' + CRLF
+  ));
+
+  // closing boundary
+  parts.push(Buffer.from('--' + boundary + '--' + CRLF));
+
+  const body = Buffer.concat(parts);
+
+  // Send via Node https module
+  const responseText = await new Promise((resolve, reject) => {
+    const options = {
+      hostname: 'api.openai.com',
+      path: '/v1/audio/transcriptions',
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + apiKey,
+        'Content-Type': 'multipart/form-data; boundary=' + boundary,
+        'Content-Length': body.length,
+      },
+    };
+
+    const req = https.request(options, (res) => {
+      console.log('[score-video] Whisper response status:', res.statusCode);
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => resolve({ status: res.statusCode, body: data }));
+    });
+
+    req.on('error', reject);
+    req.setTimeout(120000, () => {
+      req.destroy();
+      reject(new Error('Whisper request timed out after 120s'));
+    });
+    req.write(body);
+    req.end();
   });
 
-  console.log('[score-video] Whisper response status:', response.status);
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Whisper API error ${response.status}: ${err}`);
+  let data;
+  try {
+    data = JSON.parse(responseText.body);
+  } catch (e) {
+    throw new Error('Whisper response not valid JSON: ' + responseText.body.slice(0, 300));
   }
 
-  const data = await response.json();
+  if (responseText.status !== 200 || data.error) {
+    throw new Error('Whisper API error ' + responseText.status + ': ' + (data.error?.message || responseText.body.slice(0, 200)));
+  }
+
   console.log('[score-video] Transcript length:', data.text?.length, 'words:', data.words?.length);
   return {
     text: data.text ?? '',
@@ -201,11 +267,12 @@ async function processVideoFile(videoPath, res) {
     let words = [];
     let transcriptError = null;
     try {
-      // Check audio file exists and has content before sending to Whisper
+      // Check audio file exists and has real content before sending to Whisper
+      // WAV header = 44 bytes, so anything > 100 bytes means real audio was extracted
       const audioStat = await fsPromises.stat(audioPath).catch(() => null);
-      if (!audioStat || audioStat.size < 1000) {
-        transcriptError = 'Audio track missing or silent — video may have no audio';
-        console.warn('[score-video] Audio file too small:', audioStat?.size ?? 0, 'bytes');
+      if (!audioStat || audioStat.size < 100) {
+        transcriptError = 'No audio track found in this video — transcript unavailable';
+        console.warn('[score-video] Audio file missing or empty:', audioStat?.size ?? 0, 'bytes');
       } else {
         console.log('[score-video] Audio file size:', audioStat.size, 'bytes — sending to Whisper');
         const result = await transcribeAudio(audioPath);
