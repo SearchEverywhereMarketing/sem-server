@@ -4,7 +4,6 @@ const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const ffmpegStatic = require('ffmpeg-static');
-const ffprobeStatic = require('ffprobe-static');
 const ffmpeg = require('fluent-ffmpeg');
 const { exec } = require('child_process');
 const { promisify } = require('util');
@@ -13,9 +12,12 @@ const fsPromises = require('fs/promises');
 const path = require('path');
 const os = require('os');
 
-// Point fluent-ffmpeg at the static binaries
+// Point fluent-ffmpeg at the static binary
 ffmpeg.setFfmpegPath(ffmpegStatic);
-ffmpeg.setFfprobePath(ffprobeStatic.path);
+
+// Also set ffprobe path — ffmpeg-static includes ffprobe
+const ffprobePath = ffmpegStatic.replace('ffmpeg', 'ffprobe');
+ffmpeg.setFfprobePath(ffprobePath);
 
 const execAsync = promisify(exec);
 const app = express();
@@ -84,7 +86,7 @@ async function extractFrames(videoPath, framesDir) {
   console.log('[score-video] Extracting frames to:', framesDir);
   return new Promise((resolve, reject) => {
     ffmpeg(videoPath)
-      .outputOptions(['-vf', 'fps=1,scale=1568:-2'])
+      .outputOptions(['-vf', 'fps=1'])
       .output(path.join(framesDir, 'frame_%04d.jpg'))
       .on('end', () => {
         console.log('[score-video] ffmpeg frames done');
@@ -226,6 +228,9 @@ const upload = multer({
 });
 
 app.post('/api/score-video', (req, res, next) => {
+  // Set per-request timeout to 8 minutes for large video processing
+  req.setTimeout(480000);
+  res.setTimeout(480000);
   // Route based on content type
   if (req.is('application/json')) {
     next(); // skip multer, go to JSON handler below
@@ -400,7 +405,7 @@ IMPORTANT: Look at the image carefully. Whatever product is in the photo — tha
       },
       body: JSON.stringify({
         model: 'gpt-4o',
-        max_tokens: 800,
+        max_tokens: 4000,
         messages: [
           { role: 'system', content: systemPrompt },
           {
@@ -486,7 +491,7 @@ Return ONLY valid JSON:
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 600,
+        max_tokens: 2000,
         system: systemPrompt,
         messages: [{
           role: 'user',
@@ -532,7 +537,7 @@ const server = app.listen(PORT, () => {
   console.log('[startup] ANTHROPIC_API_KEY present:', !!process.env.ANTHROPIC_API_KEY);
   console.log('[startup] OPENAI_API_KEY present:', !!process.env.OPENAI_API_KEY);
   console.log('[startup] ffmpeg path:', ffmpegStatic);
-  console.log('[startup] ffprobe path:', ffprobeStatic.path);
+  console.log('[startup] ffprobe path:', require('ffprobe-static').path);
 });
 
-server.setTimeout(120000);
+server.setTimeout(600000); // 10 min — allows large video upload + ffmpeg processing
