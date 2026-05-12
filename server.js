@@ -199,16 +199,26 @@ async function processVideoFile(videoPath, res) {
     // Transcription is best-effort — frames always returned even if Whisper fails
     let transcript = '';
     let words = [];
+    let transcriptError = null;
     try {
-      const result = await transcribeAudio(audioPath);
-      transcript = result.text;
-      words = result.words;
+      // Check audio file exists and has content before sending to Whisper
+      const audioStat = await fsPromises.stat(audioPath).catch(() => null);
+      if (!audioStat || audioStat.size < 1000) {
+        transcriptError = 'Audio track missing or silent — video may have no audio';
+        console.warn('[score-video] Audio file too small:', audioStat?.size ?? 0, 'bytes');
+      } else {
+        console.log('[score-video] Audio file size:', audioStat.size, 'bytes — sending to Whisper');
+        const result = await transcribeAudio(audioPath);
+        transcript = result.text;
+        words = result.words;
+      }
     } catch (transcriptErr) {
+      transcriptError = transcriptErr.message;
       console.warn('[score-video] Transcription failed (non-fatal):', transcriptErr.message);
     }
 
-    console.log('[score-video] Done. Sending response. transcript length:', transcript.length);
-    res.json({ frames, transcript, words, duration });
+    console.log('[score-video] Done. transcript length:', transcript.length, transcriptError ? 'ERROR: '+transcriptError : 'OK');
+    res.json({ frames, transcript, words, duration, transcriptError });
   } finally {
     await Promise.allSettled([
       fsPromises.rm(framesDir, { recursive: true, force: true }),
