@@ -15,9 +15,9 @@ const os = require('os');
 // Point fluent-ffmpeg at the static binary
 ffmpeg.setFfmpegPath(ffmpegStatic);
 
-// Also set ffprobe path — ffmpeg-static includes ffprobe
-const ffprobePath = ffmpegStatic.replace('ffmpeg', 'ffprobe');
-ffmpeg.setFfprobePath(ffprobePath);
+// Set ffprobe path from ffprobe-static package
+const ffprobeStatic = require('ffprobe-static');
+ffmpeg.setFfprobePath(ffprobeStatic.path);
 
 const execAsync = promisify(exec);
 const app = express();
